@@ -1,0 +1,7 @@
+raceback (most recent call last):
+  File "./ar_paint.py", line 115, in <module>
+    main()
+  File "./ar_paint.py", line 83, in main
+    cv2.line(image_canvas, (x, y), (drawing_data['previous_x'], drawing_data['previous_y']),
+cv2.error: OpenCV(4.8.1) /io/opencv/modules/imgproc/src/drawing.cpp:161: error: (-215:Assertion failed) connectivity == 8 || connectivity == 4 in function 'init'
+

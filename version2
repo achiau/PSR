@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+from pprint import pprint
+from random import randint
+import cv2
+import json
+import argparse
+import numpy as np
+from time import ctime
+from colorama import Back, Fore, Style
+from functools import partial 
+from math import sqrt
+
+def process_image(image, data, height, width, mask_color):
+    bmin = data['limits']['B']['min']
+    bmax = data['limits']['B']['max']
+    gmin = data['limits']['G']['min']
+    gmax = data['limits']['G']['max']
+    rmin = data['limits']['R']['min']
+    rmax = data['limits']['R']['max']
+
+    mask = cv2.inRange(image, (bmin, gmin, rmin), (bmax, gmax, rmax))
+
+    green_mask = np.zeros((height, width, 3), np.uint8)
+    green_mask[mask > 0] = mask_color
+
+    mask_image = cv2.add(green_mask, image)
+
+    return mask_image, green_mask
+
+def get_connected_components(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, binary_image = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_image, connectivity=4)
+    return num_labels, labels, stats, centroids
+
+def mouseCallback(event, x, y, flags, *userdata, image_canvas, drawing_data):
+    if event == cv2.EVENT_LBUTTONDOWN:
+        drawing_data['pencil_down'] = True
+        print(Fore.BLUE + 'pencil_down set to True' + Fore.RESET)
+    elif event == cv2.EVENT_LBUTTONUP: 
+        drawing_data['pencil_down'] = False
+        print(Fore.RED + 'pencil_down released' + Fore.RESET)
+
+    if drawing_data['pencil_down'] == True:
+        cv2.line(image_canvas, (drawing_data['previous_x'], drawing_data['previous_y']), (x, y), drawing_data['color'], drawing_data['size'])
+
+    drawing_data['previous_x'] = x
+    drawing_data['previous_y'] = y
+
+def draw_game(json_file, mask_color='green', use_shake_prevention=False, use_mouse=False, use_camera=False, show_zones=False):
+    def create_zones(image_canvas, image_zones, height, width):
+        number_of_zones = 0
+        line_width = 10
+        line_color = (0, 0, 0)
+        contours = None
+        zones = {}
+        
+        print("How many zones do you want to paint?")
+        create_zones_number = input()
+        
+        # Creating a default vertex list
+        vertices = [(0, 0), (0, int(height / 2)), (0, height), (int(width / 2), 0), (width, 0), (width, int(height / 2)),
+                    (int(width / 2), height), (width, height)]
+        
+        # Making the frame
+        cv2.line(image_canvas, vertices[0], vertices[2], line_color, line_width)
+        cv2.line(image_canvas, vertices[0], vertices[4], line_color, line_width)
+        cv2.line(image_canvas, vertices[7], vertices[2], line_color, line_width)
+        cv2.line(image_canvas, vertices[7], vertices[4], line_color, line_width)
+        cv2.line(image_zones, vertices[0], vertices[2], line_color, line_width)
+        cv2.line(image_zones, vertices[0], vertices[4], line_color, line_width)
+        cv2.line(image_zones, vertices[7], vertices[2], line_color, line_width)
+        cv2.line(image_zones, vertices[7], vertices[4], line_color, line_width)
+        
+        # Create the zones
+        while number_of_zones < int(create_zones_number):
+            v_1 = randint(0, len(vertices) - 1)
+            v_2 = randint(0, len(vertices) - 1)
+            cv2.line(image_canvas, vertices[v_1], vertices[v_2], line_color, line_width)
+            cv2.line(image_zones, vertices[v_1], vertices[v_2], line_color, line_width)
+
+            gray_image = cv2.cvtColor(image_canvas, cv2.COLOR_RGB2GRAY)
+            _, black_image = cv2.threshold(gray_image, 128, 255, cv2.THRESH_BINARY)
+            contours, _ = cv2.findContours(black_image, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_TC89_L1)
+            number_of_zones = len(contours)
+        
+        # Write the zone label
+        for i in range(number_of_zones):
+            moments = cv2.moments(contours[i])
+            try:
+                center = (int(moments['m10'] / moments['m00']), int(moments['m01'] / moments['m00']))
+            except:
+                continue
+
+            color_number = randint(1, 3)
+            letter_number = ['B', 'G', 'R']
+            cv2.putText(image_canvas, letter_number[color_number - 1], center, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2,
+                        cv2.LINE_AA)
+            cv2.putText(image_zones, letter_number[color_number - 1], center, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2,
+                        cv2.LINE_AA)
+            # Save the contours and their color to the zones dictionary
+            zones[i] = {'color': color_number, 'contour': contours[i]}
+        
+        return image_canvas, image_zones, zones
+
+    def check_zones(image_canvas, zones):
+        all_pixels = 0
+        correct_pixels = 0
+        for i in range(len(zones)):
+            mask = np.zeros(image_canvas.shape, dtype=np.uint8)  # 3 channel zeros
+            # TODO This command can result in "KeyError: 1"
+            zone_contour = zones[i]['contour']
+            zone_color = zones[i]['color'] - 1
+            cv2.drawContours(mask, [zone_contour], -1, (255, 255, 255), thickness=cv2.FILLED)
+            masked = cv2.bitwise_and(image_canvas, image_canvas, mask=mask[:, :, 0])
+            # Get the number of correct/all pixels
+            all_pixels += int(np.sum(mask[:, :, 0]) / 255)
+            # Deleting the other channels
+            if zone_color == 0:
+                white_pixels = int(
+                    np.sum(cv2.bitwise_and(masked[:, :, 1], masked[:, :, 2], mask=None) / 255))
+            elif zone_color == 1:
+                white_pixels = int(
+                    np.sum(cv2.bitwise_and(masked[:, :, 0], masked[:, :, 2], mask=None) / 255))
+            elif zone_color == 
+
+
+
+
+
